@@ -1,0 +1,151 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Cancel redundant runs on the same ref (e.g. rapid pushes to a PR branch)
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build-linux:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          # x64 — test two GCC versions and two Clang versions
+          - { os: ubuntu-24.04,     compiler: g++-13,     packages: g++-13    }
+          - { os: ubuntu-24.04,     compiler: g++-14,     packages: g++-14    }
+          - { os: ubuntu-24.04,     compiler: clang++-17, packages: clang-17  }
+          - { os: ubuntu-24.04,     compiler: clang++-18, packages: clang-18  }
+          # x64 — older LTS: exercises a different GCC and standard library version
+          - { os: ubuntu-22.04,     compiler: g++-12,     packages: g++-12    }
+          # arm64 — distinct ISA; same compiler version as x64 to isolate architecture
+          - { os: ubuntu-24.04-arm, compiler: g++-14,     packages: g++-14    }
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install compiler
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y ${{ matrix.packages }}
+
+      # Cache CPM-downloaded sources (Catch2 etc.) keyed on CMakeLists.txt content.
+      # CPM_SOURCE_CACHE is forwarded to cmake below so both steps agree on the path.
+      - name: Cache CPM sources
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/cpm-cache
+          key: cpm-${{ runner.os }}-${{ hashFiles('CMakeLists.txt') }}
+          restore-keys: cpm-${{ runner.os }}-
+
+      # ccache-action manages save/restore internally; no separate actions/cache needed.
+      - name: Set up ccache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: ${{ matrix.os }}-${{ matrix.compiler }}
+
+      # Use Debug so assertions in non_null are active and exercised by the tests.
+      - name: Configure, build, and test
+        env:
+          CPM_SOURCE_CACHE: ${{ runner.temp }}/cpm-cache
+        run: |
+          cmake -B build \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_CXX_COMPILER=${{ matrix.compiler }} \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+          cmake --build build --parallel
+          ctest --test-dir build --output-on-failure
+
+  build-macos:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          # arm64 (Apple Silicon M1) — two macOS generations
+          - { os: macos-14 }
+          - { os: macos-15 }
+          # Intel x64 — the only way to cover x64 macOS; Apple Silicon runners above don't test this ISA
+          - { os: macos-15-intel }
+          # arm64 preview — macOS 26 (public preview; allowed to fail without blocking CI)
+          - { os: macos-26, experimental: true }
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache CPM sources
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/cpm-cache
+          key: cpm-${{ runner.os }}-${{ matrix.os }}-${{ hashFiles('CMakeLists.txt') }}
+          restore-keys: cpm-${{ runner.os }}-${{ matrix.os }}-
+
+      - name: Set up ccache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: ${{ matrix.os }}
+
+      - name: Configure, build, and test
+        continue-on-error: ${{ matrix.experimental == true }}
+        env:
+          CPM_SOURCE_CACHE: ${{ runner.temp }}/cpm-cache
+        run: |
+          cmake -B build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+          cmake --build build --parallel
+          ctest --test-dir build --output-on-failure
+
+  build-windows:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          # windows-2025 (= windows-latest): test both x64 and x86 MSVC targets
+          - { os: windows-2025, arch: x64 }
+          - { os: windows-2025, arch: x86 }
+          # windows-2022: older MSVC toolchain on the same x64 target
+          - { os: windows-2022, arch: x64 }
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache CPM sources
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/cpm-cache
+          key: cpm-${{ runner.os }}-${{ matrix.arch }}-${{ hashFiles('CMakeLists.txt') }}
+          restore-keys: cpm-${{ runner.os }}-${{ matrix.arch }}-
+
+      - name: Set up sccache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: windows-${{ matrix.arch }}
+          variant: sccache
+
+      - name: Set up MSVC
+        uses: TheMrMilchmann/setup-msvc-dev@v3
+        with:
+          arch: ${{ matrix.arch }}
+
+      # Ninja is pre-installed on GitHub-hosted Windows runners.
+      - name: Configure, build, and test
+        env:
+          CPM_SOURCE_CACHE: ${{ runner.temp }}/cpm-cache
+        run: |
+          cmake -B build -G Ninja `
+            -DCMAKE_BUILD_TYPE=Release `
+            -DCMAKE_CXX_COMPILER_LAUNCHER=sccache
+          cmake --build build --parallel
+          ctest --test-dir build --output-on-failure
