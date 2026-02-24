@@ -55,6 +55,13 @@ auto nn2 = nova::non_null(take(std::move(nn1)));  // Safe, explicit extraction
 | `take(rhs&&)` | Explicitly extract underlying pointer (breaks non-null invariant on rhs) |
 | `swap(lhs, rhs)` | ADL-found standard swap |
 
+## Type aliases
+
+| Alias | Equivalent |
+|-------|-----------|
+| `non_null_unique_ptr<T>` | `non_null<std::unique_ptr<T>>` |
+| `non_null_shared_ptr<T>` | `non_null<std::shared_ptr<T>>` |
+
 ## Move Safety
 
 Move semantics are **conditionally enabled** based on pointer type:
