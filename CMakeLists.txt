@@ -2,7 +2,9 @@ cmake_minimum_required(VERSION 3.14)
 
 project(nova_nonnull VERSION 0.1.0 LANGUAGES CXX)
 
-set(CMAKE_CXX_STANDARD 20)
+if(NOT CMAKE_CXX_STANDARD)
+    set(CMAKE_CXX_STANDARD 20)
+endif()
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # Project layout
@@ -34,11 +36,14 @@ if(NOVA_BUILD_TESTS)
     endif()
 
     if (NOT TARGET Catch2::Catch2WithMain)
-        CPMAddPackage(
-            NAME Catch2
-            GITHUB_REPOSITORY catchorg/Catch2
-            VERSION 3.13.0
-        )
+        block()
+            set(CMAKE_UNITY_BUILD ON)
+            CPMAddPackage(
+                NAME Catch2
+                GITHUB_REPOSITORY catchorg/Catch2
+                VERSION 3.13.0
+            )
+        endblock()
     endif()
 
     add_executable(nova_nonnull_tests tests/test_non_null.cpp)

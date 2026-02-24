@@ -3,7 +3,7 @@
 [![CI](https://github.com/timblechmann/nova_nonnull/actions/workflows/ci.yml/badge.svg)](https://github.com/timblechmann/nova_nonnull/actions/workflows/ci.yml)
 
 A C++20 non-null pointer wrapper with compiler hints for better code generation. Inspired by
-[`gsl::non_null`](https://github.com/microsoft/GSL/blob/main/include/gsl/pointers), which
+[`gsl::not_null`](https://github.com/microsoft/GSL/blob/main/include/gsl/pointers), which
 enforces nullability contracts but lacks compiler attributes for optimization.
 
 ## Usage
