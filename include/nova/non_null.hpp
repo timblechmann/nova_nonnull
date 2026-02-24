@@ -35,8 +35,14 @@
 
 #if defined( __clang__ )
 #    define NOVA_NONNULL _Nonnull
+#    if __clang_major__ >= 19
+#        define NOVA_NONNULL_NONTRIVIAL _Nonnull
+#    else
+#        define NOVA_NONNULL_NONTRIVIAL
+#    endif
 #else
 #    define NOVA_NONNULL
+#    define NOVA_NONNULL_NONTRIVIAL
 #endif
 
 namespace nova {
@@ -167,7 +173,7 @@ public:
      * For copyable pointer types the result can be re-wrapped immediately:
      *   auto nn2 = non_null( take( std::move(nn1) ) );
      */
-    friend constexpr T NOVA_NONNULL take( non_null&& nn ) noexcept
+    friend constexpr T NOVA_NONNULL_NONTRIVIAL take( non_null&& nn ) noexcept
 #if defined( __clang__ ) && ( __clang_major__ >= 20 )
         NOVA_RETURNS_NONNULL
 #endif
@@ -385,17 +391,17 @@ public:
     }
 
 private:
-    T NOVA_NONNULL ptr_;
+    T NOVA_NONNULL_NONTRIVIAL ptr_;
 };
 
 template < typename T >
 non_null( T* NOVA_NONNULL ) -> non_null< T* >;
 
 template < typename T, typename D >
-non_null( std::unique_ptr< T, D > ) -> non_null< std::unique_ptr< T, D > >;
+non_null( std::unique_ptr< T, D > NOVA_NONNULL_NONTRIVIAL ) -> non_null< std::unique_ptr< T, D > >;
 
 template < typename T >
-non_null( std::shared_ptr< T > ) -> non_null< std::shared_ptr< T > >;
+non_null( std::shared_ptr< T > NOVA_NONNULL_NONTRIVIAL ) -> non_null< std::shared_ptr< T > >;
 
 template < typename T >
 non_null( non_null< T > ) -> non_null< T >;
