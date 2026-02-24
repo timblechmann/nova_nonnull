@@ -7,6 +7,15 @@ if(NOT CMAKE_CXX_STANDARD)
 endif()
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+add_custom_target(nova_nonnull_project_files SOURCES
+    .clang-tidy
+    .pre-commit-config.yaml
+    _clang-format
+    README.md
+    LICENSE
+    .github/workflows/ci.yml
+)
+
 # Project layout
 add_library(nova_nonnull INTERFACE)
 add_library(nova::nonnull ALIAS nova_nonnull)
