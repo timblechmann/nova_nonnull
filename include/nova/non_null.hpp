@@ -167,7 +167,10 @@ public:
      * For copyable pointer types the result can be re-wrapped immediately:
      *   auto nn2 = non_null( take( std::move(nn1) ) );
      */
-    friend constexpr T take( non_null&& nn ) noexcept
+    friend constexpr T NOVA_NONNULL take( non_null&& nn ) noexcept
+#if defined( __clang__ ) && ( __clang_major__ >= 20 )
+        NOVA_RETURNS_NONNULL
+#endif
     {
         return std::move( nn.ptr_ );
     }
@@ -382,7 +385,7 @@ public:
     }
 
 private:
-    T ptr_;
+    T NOVA_NONNULL ptr_;
 };
 
 template < typename T >
