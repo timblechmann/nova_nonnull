@@ -66,47 +66,8 @@ jobs:
           cmake --build build --parallel
           ctest --test-dir build --output-on-failure
 
-  build-macos:
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: true
-      matrix:
-        include:
-          # arm64 (Apple Silicon M1) — two macOS generations
-          - { os: macos-14 }
-          - { os: macos-15 }
-          # Intel x64 — the only way to cover x64 macOS; Apple Silicon runners above don't test this ISA
-          - { os: macos-15-intel }
-          # arm64 preview — macOS 26 (public preview; allowed to fail without blocking CI)
-          - { os: macos-26, experimental: true }
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Cache CPM sources
-        uses: actions/cache@v4
-        with:
-          path: ${{ runner.temp }}/cpm-cache
-          key: cpm-${{ runner.os }}-${{ matrix.os }}-${{ hashFiles('CMakeLists.txt') }}
-          restore-keys: cpm-${{ runner.os }}-${{ matrix.os }}-
-
-      - name: Set up ccache
-        uses: hendrikmuhs/ccache-action@v1.2
-        with:
-          key: ${{ matrix.os }}
-
-      - name: Configure, build, and test
-        continue-on-error: ${{ matrix.experimental == true }}
-        env:
-          CPM_SOURCE_CACHE: ${{ runner.temp }}/cpm-cache
-        run: |
-          cmake -B build \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
-          cmake --build build --parallel
-          ctest --test-dir build --output-on-failure
-
   build-windows:
+    needs: build-linux
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: true
@@ -147,5 +108,46 @@ jobs:
           cmake -B build -G Ninja `
             -DCMAKE_BUILD_TYPE=Release `
             -DCMAKE_CXX_COMPILER_LAUNCHER=sccache
+          cmake --build build --parallel
+          ctest --test-dir build --output-on-failure
+
+  build-macos:
+    needs: build-windows
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          # arm64 (Apple Silicon M1) — two macOS generations
+          - { os: macos-14 }
+          - { os: macos-15 }
+          # Intel x64 — the only way to cover x64 macOS; Apple Silicon runners above don't test this ISA
+          - { os: macos-15-intel }
+          # arm64 preview — macOS 26 (public preview; allowed to fail without blocking CI)
+          - { os: macos-26, experimental: true }
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache CPM sources
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/cpm-cache
+          key: cpm-${{ runner.os }}-${{ matrix.os }}-${{ hashFiles('CMakeLists.txt') }}
+          restore-keys: cpm-${{ runner.os }}-${{ matrix.os }}-
+
+      - name: Set up ccache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: ${{ matrix.os }}
+
+      - name: Configure, build, and test
+        continue-on-error: ${{ matrix.experimental == true }}
+        env:
+          CPM_SOURCE_CACHE: ${{ runner.temp }}/cpm-cache
+        run: |
+          cmake -B build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
           cmake --build build --parallel
           ctest --test-dir build --output-on-failure
