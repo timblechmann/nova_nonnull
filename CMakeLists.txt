@@ -46,7 +46,10 @@ if(NOVA_BUILD_TESTS)
         endblock()
     endif()
 
-    add_executable(nova_nonnull_tests tests/test_non_null.cpp)
+    add_executable(nova_nonnull_tests
+        tests/test_non_null.cpp
+        tests/test_non_null_function.cpp
+    )
     target_link_libraries(nova_nonnull_tests PRIVATE nova::nonnull Catch2::Catch2WithMain)
 
     enable_testing()
