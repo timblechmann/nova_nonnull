@@ -4,11 +4,26 @@
 #pragma once
 
 #include <cassert>
+#include <cstddef>
 #include <functional>
 #include <memory>
 #include <optional>
 #include <type_traits>
 #include <utility>
+
+#if defined( __has_feature )
+#    if __has_feature( address_sanitizer )
+#        define NOVA_HAVE_ASAN 1
+#    endif
+#endif
+#if defined( __SANITIZE_ADDRESS__ )
+#    define NOVA_HAVE_ASAN 1
+#endif
+
+#ifdef NOVA_HAVE_ASAN
+#    include <sanitizer/asan_interface.h>
+#endif
+
 
 #if defined( __has_cpp_attribute )
 #    if __has_cpp_attribute( assume )
@@ -46,9 +61,31 @@
 #    define NOVA_NONNULL_NONTRIVIAL
 #endif
 
+
 namespace nova {
 
 namespace detail {
+
+#if defined( NOVA_HAVE_ASAN )
+inline void nova_asan_poison( void const* NOVA_NONNULL p, std::size_t s ) noexcept
+{
+    __asan_poison_memory_region( p, s );
+}
+inline void nova_asan_unpoison( void const* NOVA_NONNULL p, std::size_t s ) noexcept
+{
+    __asan_unpoison_memory_region( p, s );
+}
+/* In ASAN builds we cannot keep take() constexpr because it calls runtime
+   instrumentation functions. Control the constexpr-ness via this macro. */
+#    define NOVA_ASAN_CONSTEXPR /* empty */
+#else
+inline void nova_asan_poison( void const* NOVA_NONNULL, std::size_t ) noexcept
+{}
+inline void nova_asan_unpoison( void const* NOVA_NONNULL, std::size_t ) noexcept
+{}
+#    define NOVA_ASAN_CONSTEXPR constexpr
+#endif
+
 
 template < typename T, typename = void >
 struct element_type_trait
@@ -144,8 +181,15 @@ public:
     // - For move-only pointers (unique_ptr): move deleted; use take() instead
     // This prevents accidental moves of move-only types while enabling efficient
     // moves of copyable types.
-    non_null( const non_null& )            = default;
-    non_null& operator=( const non_null& ) = default;
+    non_null( const non_null& ) = default;
+    non_null& operator=( const non_null& other ) noexcept
+    {
+        // If this object was previously poisoned by take(), ensure we can write
+        // into ptr_ without ASAN reporting a write to poisoned memory.
+        detail::nova_asan_unpoison( &ptr_, sizeof( ptr_ ) );
+        ptr_ = other.ptr_;
+        return *this;
+    }
 
     /**
      * @brief Move constructor, enabled only for copyable pointer types.
@@ -157,6 +201,11 @@ public:
         ptr_( std::move( other.ptr_ ) )
     {}
 
+    ~non_null()
+    {
+        detail::nova_asan_unpoison( &ptr_, sizeof( ptr_ ) );
+    }
+
     /**
      * @brief Move assignment, enabled only for copyable pointer types.
      * Raw pointers and std::shared_ptr support moves; std::unique_ptr does not.
@@ -164,6 +213,7 @@ public:
     constexpr non_null& operator=( non_null&& other ) noexcept
         requires detail::copyable_pointer< T >
     {
+        detail::nova_asan_unpoison( &ptr_, sizeof( ptr_ ) );
         ptr_ = std::move( other.ptr_ );
         return *this;
     }
@@ -186,12 +236,16 @@ public:
      * For copyable pointer types the result can be re-wrapped immediately:
      *   auto nn2 = non_null( take( std::move(nn1) ) );
      */
-    friend constexpr T NOVA_NONNULL_NONTRIVIAL take( non_null&& nn ) noexcept
+    friend NOVA_ASAN_CONSTEXPR T NOVA_NONNULL_NONTRIVIAL take( non_null&& nn ) noexcept
 #if defined( __clang__ ) && ( __clang_major__ >= 20 )
         NOVA_RETURNS_NONNULL
 #endif
     {
-        return std::move( nn.ptr_ );
+        T tmp = std::move( nn.ptr_ );
+        // Poison the source wrapper storage so accidental use-after-take
+        // triggers ASAN in instrumented builds.
+        detail::nova_asan_poison( &nn.ptr_, sizeof( nn.ptr_ ) );
+        return tmp;
     }
 
     /**
@@ -200,6 +254,10 @@ public:
      */
     constexpr void swap( non_null& other ) noexcept
     {
+        // Unpoison both sides before swapping so the swap operation can write
+        // into the underlying storage safely under ASAN.
+        detail::nova_asan_unpoison( &ptr_, sizeof( ptr_ ) );
+        detail::nova_asan_unpoison( &other.ptr_, sizeof( other.ptr_ ) );
         using std::swap;
         swap( ptr_, other.ptr_ );
     }
@@ -515,9 +573,20 @@ public:
         detail::assume_not_empty( fn_ );
     }
 
+    ~non_null_function()
+    {
+        detail::nova_asan_unpoison( &fn_, sizeof( fn_ ) );
+    }
+
     // Copy ctor and copy assignment are defaulted (std::function is copyable)
-    non_null_function( const non_null_function& )            = default;
-    non_null_function& operator=( const non_null_function& ) = default;
+    non_null_function( const non_null_function& ) = default;
+    non_null_function& operator=( const non_null_function& other )
+    {
+        // Unpoison target storage in case it was poisoned by a previous take().
+        detail::nova_asan_unpoison( &fn_, sizeof( fn_ ) );
+        fn_ = other.fn_;
+        return *this;
+    }
 
     // Implicit move: deleted to prevent accidental moves that leave the
     // wrapper in an unusable (empty) state. Use take() to transfer ownership explicitly.
@@ -563,6 +632,8 @@ public:
      */
     constexpr void swap( non_null_function& other ) noexcept
     {
+        detail::nova_asan_unpoison( &fn_, sizeof( fn_ ) );
+        detail::nova_asan_unpoison( &other.fn_, sizeof( other.fn_ ) );
         fn_.swap( other.fn_ );
     }
 
@@ -575,7 +646,9 @@ public:
      */
     friend function_type take( non_null_function&& nn ) noexcept
     {
-        return std::move( nn.fn_ );
+        function_type tmp = std::move( nn.fn_ );
+        detail::nova_asan_poison( &nn.fn_, sizeof( nn.fn_ ) );
+        return tmp;
     }
 
 private:
@@ -688,6 +761,8 @@ public:
      */
     constexpr void swap( non_null_move_only_function& other ) noexcept
     {
+        detail::nova_asan_unpoison( &fn_, sizeof( fn_ ) );
+        detail::nova_asan_unpoison( &other.fn_, sizeof( other.fn_ ) );
         fn_.swap( other.fn_ );
     }
 
@@ -701,11 +776,13 @@ public:
      */
     friend function_type take( non_null_move_only_function&& nn ) noexcept
     {
-        return std::move( nn.fn_ );
+        function_type tmp = std::move( nn.fn_ );
+        detail::nova_asan_poison( &nn.fn_, sizeof( nn.fn_ ) );
+        return tmp;
     }
 
 private:
-    function_type NOVA_NONNULL fn_;
+    function_type NOVA_NONNULL_NONTRIVIAL fn_;
 };
 
 /**
@@ -724,3 +801,6 @@ void swap( non_null_move_only_function< Sig >& lhs, non_null_move_only_function<
 #undef NOVA_ASSUME
 #undef NOVA_RETURNS_NONNULL
 #undef NOVA_NONNULL
+#ifdef NOVA_HAVE_ASAN
+#    undef NOVA_HAVE_ASAN
+#endif

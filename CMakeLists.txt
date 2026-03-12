@@ -1,11 +1,15 @@
-cmake_minimum_required(VERSION 3.14)
+cmake_minimum_required(VERSION 3.25)
 
 project(nova_nonnull VERSION 0.1.0 LANGUAGES CXX)
 
-if(NOT CMAKE_CXX_STANDARD)
+if (NOT CMAKE_CXX_STANDARD)
     set(CMAKE_CXX_STANDARD 20)
 endif()
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+if (NOT CMAKE_MSVC_DEBUG_INFORMATION_FORMAT)
+    set(CMAKE_MSVC_DEBUG_INFORMATION_FORMAT "Embedded")
+endif()
 
 add_custom_target(nova_nonnull_project_files SOURCES
     .clang-tidy
@@ -63,4 +67,27 @@ if(NOVA_BUILD_TESTS)
 
     enable_testing()
     add_test(NAME nova_nonnull_tests COMMAND nova_nonnull_tests)
+
+    add_executable(nova_nonnull_asan_take_tests
+        tests/asan_take.cpp
+    )
+    target_link_libraries(nova_nonnull_asan_take_tests PRIVATE nova::nonnull )
+    target_compile_options(nova_nonnull_asan_take_tests PRIVATE
+        $<$<COMPILE_LANG_AND_ID:CXX,GNU,Clang,AppleClang>:-fsanitize=address;-fno-omit-frame-pointer>
+        $<$<COMPILE_LANG_AND_ID:CXX,MSVC>:/fsanitize=address>
+    )
+
+    target_link_options(nova_nonnull_asan_take_tests PRIVATE
+        $<$<COMPILE_LANG_AND_ID:CXX,GNU,Clang,AppleClang>:-fsanitize=address>
+        $<$<COMPILE_LANG_AND_ID:CXX,GNU>:-static-libasan>
+    )
+
+    if (CMAKE_BUILD_TYPE STREQUAL "Debug")
+        add_test(NAME nova_nonnull_asan_take_tests
+            COMMAND ${CMAKE_COMMAND} -E env $<TARGET_FILE:nova_nonnull_asan_take_tests>
+        )
+        set_tests_properties(nova_nonnull_asan_take_tests PROPERTIES
+            PASS_REGULAR_EXPRESSION ".*AddressSanitizer: use-after-poison.*"
+        )
+    endif()
 endif()
