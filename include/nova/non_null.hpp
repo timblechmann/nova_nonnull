@@ -4,10 +4,26 @@
 #pragma once
 
 #include <cassert>
+#include <cstddef>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <type_traits>
 #include <utility>
+
+#if defined( __has_feature )
+#    if __has_feature( address_sanitizer )
+#        define NOVA_HAVE_ASAN 1
+#    endif
+#endif
+#if defined( __SANITIZE_ADDRESS__ )
+#    define NOVA_HAVE_ASAN 1
+#endif
+
+#ifdef NOVA_HAVE_ASAN
+#    include <sanitizer/asan_interface.h>
+#endif
+
 
 #if defined( __has_cpp_attribute )
 #    if __has_cpp_attribute( assume )
@@ -45,9 +61,31 @@
 #    define NOVA_NONNULL_NONTRIVIAL
 #endif
 
+
 namespace nova {
 
 namespace detail {
+
+#if defined( NOVA_HAVE_ASAN )
+inline void nova_asan_poison( void const* NOVA_NONNULL p, std::size_t s ) noexcept
+{
+    __asan_poison_memory_region( p, s );
+}
+inline void nova_asan_unpoison( void const* NOVA_NONNULL p, std::size_t s ) noexcept
+{
+    __asan_unpoison_memory_region( p, s );
+}
+/* In ASAN builds we cannot keep take() constexpr because it calls runtime
+   instrumentation functions. Control the constexpr-ness via this macro. */
+#    define NOVA_ASAN_CONSTEXPR /* empty */
+#else
+inline void nova_asan_poison( void const* NOVA_NONNULL, std::size_t ) noexcept
+{}
+inline void nova_asan_unpoison( void const* NOVA_NONNULL, std::size_t ) noexcept
+{}
+#    define NOVA_ASAN_CONSTEXPR constexpr
+#endif
+
 
 template < typename T, typename = void >
 struct element_type_trait
@@ -79,7 +117,19 @@ constexpr void assume_nonnull( const T& ptr ) noexcept
     NOVA_ASSUME( is_not_null );
 }
 
+template < typename F >
+constexpr void assume_not_empty( const F& fn ) noexcept
+{
+    [[maybe_unused]] const bool is_not_empty = static_cast< bool >( fn );
+    assert( is_not_empty && "nova::detail::assume_not_empty: callable cannot be empty" );
+    NOVA_ASSUME( is_not_empty );
+}
+
 } // namespace detail
+
+// =============================================================================
+// non_null
+// =============================================================================
 
 /**
  * @brief A simple non-null wrapper for pointers and smart-pointers.
@@ -131,8 +181,15 @@ public:
     // - For move-only pointers (unique_ptr): move deleted; use take() instead
     // This prevents accidental moves of move-only types while enabling efficient
     // moves of copyable types.
-    non_null( const non_null& )            = default;
-    non_null& operator=( const non_null& ) = default;
+    non_null( const non_null& ) = default;
+    non_null& operator=( const non_null& other ) noexcept
+    {
+        // If this object was previously poisoned by take(), ensure we can write
+        // into ptr_ without ASAN reporting a write to poisoned memory.
+        detail::nova_asan_unpoison( &ptr_, sizeof( ptr_ ) );
+        ptr_ = other.ptr_;
+        return *this;
+    }
 
     /**
      * @brief Move constructor, enabled only for copyable pointer types.
@@ -144,6 +201,11 @@ public:
         ptr_( std::move( other.ptr_ ) )
     {}
 
+    ~non_null()
+    {
+        detail::nova_asan_unpoison( &ptr_, sizeof( ptr_ ) );
+    }
+
     /**
      * @brief Move assignment, enabled only for copyable pointer types.
      * Raw pointers and std::shared_ptr support moves; std::unique_ptr does not.
@@ -151,6 +213,7 @@ public:
     constexpr non_null& operator=( non_null&& other ) noexcept
         requires detail::copyable_pointer< T >
     {
+        detail::nova_asan_unpoison( &ptr_, sizeof( ptr_ ) );
         ptr_ = std::move( other.ptr_ );
         return *this;
     }
@@ -173,12 +236,16 @@ public:
      * For copyable pointer types the result can be re-wrapped immediately:
      *   auto nn2 = non_null( take( std::move(nn1) ) );
      */
-    friend constexpr T NOVA_NONNULL_NONTRIVIAL take( non_null&& nn ) noexcept
+    friend NOVA_ASAN_CONSTEXPR T NOVA_NONNULL_NONTRIVIAL take( non_null&& nn ) noexcept
 #if defined( __clang__ ) && ( __clang_major__ >= 20 )
         NOVA_RETURNS_NONNULL
 #endif
     {
-        return std::move( nn.ptr_ );
+        T tmp = std::move( nn.ptr_ );
+        // Poison the source wrapper storage so accidental use-after-take
+        // triggers ASAN in instrumented builds.
+        detail::nova_asan_poison( &nn.ptr_, sizeof( nn.ptr_ ) );
+        return tmp;
     }
 
     /**
@@ -187,6 +254,10 @@ public:
      */
     constexpr void swap( non_null& other ) noexcept
     {
+        // Unpoison both sides before swapping so the swap operation can write
+        // into the underlying storage safely under ASAN.
+        detail::nova_asan_unpoison( &ptr_, sizeof( ptr_ ) );
+        detail::nova_asan_unpoison( &other.ptr_, sizeof( other.ptr_ ) );
         using std::swap;
         swap( ptr_, other.ptr_ );
     }
@@ -464,8 +535,272 @@ inline non_null< std::shared_ptr< T > > make_non_null_shared( Args&&... args )
     return non_null( std::make_shared< T >( std::forward< Args >( args )... ) );
 }
 
+// =============================================================================
+// non_null_function
+// =============================================================================
+
+/**
+ * @brief Primary template declaration — only the function-signature
+ *        specialisation below is defined.
+ */
+template < typename Signature >
+class non_null_function;
+
+/**
+ * @brief A non-null wrapper for std::function<R(Args...)>.
+ *
+ * Guarantees the stored callable is never empty (i.e. bool(fn_) == true).
+ *
+ * The call operator uses this invariant to let the optimiser eliminate the
+ * empty-callable check.
+ */
+template < typename R, typename... Args >
+class non_null_function< R( Args... ) >
+{
+public:
+    using result_type   = R;
+    using function_type = std::function< R( Args... ) >;
+
+    /**
+     * @brief Constructs from any callable that is invocable with (Args...) -> R.
+     * @param f The callable to wrap. Must not be empty (assert-checked).
+     */
+    template < typename F >
+        requires std::is_invocable_r_v< R, F, Args... > && (!std::is_same_v< std::decay_t< F >, non_null_function >)
+    constexpr explicit non_null_function( F&& f ) :
+        fn_( std::forward< F >( f ) )
+    {
+        detail::assume_not_empty( fn_ );
+    }
+
+    ~non_null_function()
+    {
+        detail::nova_asan_unpoison( &fn_, sizeof( fn_ ) );
+    }
+
+    // Copy ctor and copy assignment are defaulted (std::function is copyable)
+    non_null_function( const non_null_function& ) = default;
+    non_null_function& operator=( const non_null_function& other )
+    {
+        // Unpoison target storage in case it was poisoned by a previous take().
+        detail::nova_asan_unpoison( &fn_, sizeof( fn_ ) );
+        fn_ = other.fn_;
+        return *this;
+    }
+
+    // Implicit move: deleted to prevent accidental moves that leave the
+    // wrapper in an unusable (empty) state. Use take() to transfer ownership explicitly.
+    non_null_function( non_null_function&& )            = delete;
+    non_null_function& operator=( non_null_function&& ) = delete;
+
+    // Prevent null assignment / null construction
+    non_null_function( std::nullptr_t )            = delete;
+    non_null_function& operator=( std::nullptr_t ) = delete;
+
+    /**
+     * @brief Invokes the stored callable.
+     *
+     */
+    template < typename... CallArgs >
+    R operator()( CallArgs&&... args ) const
+    {
+        detail::assume_not_empty( fn_ );
+        return fn_( std::forward< CallArgs >( args )... );
+    }
+
+    /**
+     * @brief Returns a const reference to the underlying std::function.
+     * The rvalue overload is deleted to prevent accidental moves leaving this
+     * object empty.
+     */
+    constexpr const function_type& underlying() const& noexcept
+    {
+        return fn_;
+    }
+    function_type underlying() && = delete;
+
+    /**
+     * @brief Always returns true; the callable is guaranteed non-empty.
+     */
+    constexpr explicit operator bool() const noexcept
+    {
+        return true;
+    }
+
+    /**
+     * @brief Swaps the managed callables. Both objects remain non-empty.
+     */
+    constexpr void swap( non_null_function& other ) noexcept
+    {
+        detail::nova_asan_unpoison( &fn_, sizeof( fn_ ) );
+        detail::nova_asan_unpoison( &other.fn_, sizeof( other.fn_ ) );
+        fn_.swap( other.fn_ );
+    }
+
+    /**
+     * @brief Explicitly extracts the underlying std::function, consuming the
+     *        non_null_function wrapper.
+     *
+     * After this call the non_null_function is in a moved-from state and must
+     * not be used.
+     */
+    friend function_type take( non_null_function&& nn ) noexcept
+    {
+        function_type tmp = std::move( nn.fn_ );
+        detail::nova_asan_poison( &nn.fn_, sizeof( nn.fn_ ) );
+        return tmp;
+    }
+
+private:
+    function_type NOVA_NONNULL_NONTRIVIAL fn_;
+};
+
+/**
+ * @brief Deduction guide: deduce the function signature from a plain function
+ *        pointer.
+ */
+template < typename R, typename... Args >
+non_null_function( R ( *NOVA_NONNULL )( Args... ) ) -> non_null_function< R( Args... ) >;
+
+/**
+ * @brief ADL swap for non_null_function.
+ */
+template < typename Sig >
+void swap( non_null_function< Sig >& lhs, non_null_function< Sig >& rhs ) noexcept
+{
+    lhs.swap( rhs );
+}
+
+#if defined( __cpp_lib_move_only_function ) && __cpp_lib_move_only_function >= 202110L
+
+// =============================================================================
+// non_null_move_only_function  (C++23)
+// =============================================================================
+
+/**
+ * @brief Primary template declaration.
+ */
+template < typename Signature >
+class non_null_move_only_function;
+
+/**
+ * @brief A non-null wrapper for std::move_only_function<R(Args...)>.
+ *
+ * Guarantees the stored callable is never empty (i.e. bool(fn_) == true).
+ *
+ * The call operator uses this invariant to let the optimiser eliminate the
+ * empty-callable check.
+ *
+ * Note: unlike the name suggests, the function wrapper is not movable. To prevent
+ * accidental moves that would leave the wrapper empty. Use take() to transfer
+ * ownership explicitly.
+ */
+template < typename R, typename... Args >
+class non_null_move_only_function< R( Args... ) >
+{
+public:
+    using result_type   = R;
+    using function_type = std::move_only_function< R( Args... ) >;
+
+    /**
+     * @brief Constructs from any callable that is invocable with (Args...) -> R.
+     * @param f The callable to wrap. Must not be empty (assert-checked).
+     */
+    template < typename F >
+        requires std::is_invocable_r_v< R, F, Args... >
+                 && (!std::is_same_v< std::decay_t< F >, non_null_move_only_function >)
+    constexpr explicit non_null_move_only_function( F&& f ) :
+        fn_( std::forward< F >( f ) )
+    {
+        detail::assume_not_empty( fn_ );
+    }
+
+    // Copy: deleted (move_only_function is not copyable)
+    non_null_move_only_function( const non_null_move_only_function& )            = delete;
+    non_null_move_only_function& operator=( const non_null_move_only_function& ) = delete;
+
+    // Implicit move: deleted to prevent accidental moves that leave the
+    // wrapper in an unusable (empty) state. Use take() to transfer ownership explicitly.
+    non_null_move_only_function( non_null_move_only_function&& )            = delete;
+    non_null_move_only_function& operator=( non_null_move_only_function&& ) = delete;
+
+    // Prevent null assignment / null construction
+    non_null_move_only_function( std::nullptr_t )            = delete;
+    non_null_move_only_function& operator=( std::nullptr_t ) = delete;
+
+    /**
+     * @brief Invokes the stored callable.
+     *
+     */
+    template < typename... CallArgs >
+    R operator()( CallArgs&&... args )
+    {
+        detail::assume_not_empty( fn_ );
+        return fn_( std::forward< CallArgs >( args )... );
+    }
+
+    /**
+     * @brief Returns a const reference to the underlying move_only_function.
+     */
+    constexpr const function_type& underlying() const& noexcept
+    {
+        return fn_;
+    }
+    function_type underlying() && = delete;
+
+    /**
+     * @brief Always returns true; the callable is guaranteed non-empty.
+     */
+    constexpr explicit operator bool() const noexcept
+    {
+        return true;
+    }
+
+    /**
+     * @brief Swaps the managed callables. Both objects remain non-empty.
+     */
+    constexpr void swap( non_null_move_only_function& other ) noexcept
+    {
+        detail::nova_asan_unpoison( &fn_, sizeof( fn_ ) );
+        detail::nova_asan_unpoison( &other.fn_, sizeof( other.fn_ ) );
+        fn_.swap( other.fn_ );
+    }
+
+    /**
+     * @brief Explicitly extracts the underlying move_only_function, consuming
+     *        the non_null_move_only_function wrapper.
+     *
+     * After this call the wrapper is in a moved-from state and must not be used.
+     * This is the only safe way to transfer ownership out of a
+     * non_null_move_only_function, mirroring take() for non_null<unique_ptr>.
+     */
+    friend function_type take( non_null_move_only_function&& nn ) noexcept
+    {
+        function_type tmp = std::move( nn.fn_ );
+        detail::nova_asan_poison( &nn.fn_, sizeof( nn.fn_ ) );
+        return tmp;
+    }
+
+private:
+    function_type NOVA_NONNULL_NONTRIVIAL fn_;
+};
+
+/**
+ * @brief ADL swap for non_null_move_only_function.
+ */
+template < typename Sig >
+void swap( non_null_move_only_function< Sig >& lhs, non_null_move_only_function< Sig >& rhs ) noexcept
+{
+    lhs.swap( rhs );
+}
+
+#endif // __cpp_lib_move_only_function
+
 } // namespace nova
 
 #undef NOVA_ASSUME
 #undef NOVA_RETURNS_NONNULL
 #undef NOVA_NONNULL
+#ifdef NOVA_HAVE_ASAN
+#    undef NOVA_HAVE_ASAN
+#endif

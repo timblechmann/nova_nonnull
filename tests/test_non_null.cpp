@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// SPDX-FileCopyrightText: 2026 Nova Project Contributors
+// SPDX-FileCopyrightText: 2026 Tim Blechmann
 
 #include <memory>
 #include <string>

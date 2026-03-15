@@ -55,9 +55,35 @@ if(NOVA_BUILD_TESTS)
         endblock()
     endif()
 
-    add_executable(nova_nonnull_tests tests/test_non_null.cpp)
+    add_executable(nova_nonnull_tests
+        tests/test_non_null.cpp
+        tests/test_non_null_function.cpp
+    )
     target_link_libraries(nova_nonnull_tests PRIVATE nova::nonnull Catch2::Catch2WithMain)
 
     enable_testing()
     add_test(NAME nova_nonnull_tests COMMAND nova_nonnull_tests)
+
+    add_executable(nova_nonnull_asan_take_tests
+        tests/asan_take.cpp
+    )
+    target_link_libraries(nova_nonnull_asan_take_tests PRIVATE nova::nonnull )
+    target_compile_options(nova_nonnull_asan_take_tests PRIVATE
+        $<$<COMPILE_LANG_AND_ID:CXX,GNU,Clang,AppleClang>:-fsanitize=address;-fno-omit-frame-pointer>
+        $<$<COMPILE_LANG_AND_ID:CXX,MSVC>:/fsanitize=address>
+    )
+
+    target_link_options(nova_nonnull_asan_take_tests PRIVATE
+        $<$<COMPILE_LANG_AND_ID:CXX,GNU,Clang,AppleClang>:-fsanitize=address>
+        $<$<COMPILE_LANG_AND_ID:CXX,GNU>:-static-libasan>
+    )
+
+    if (CMAKE_BUILD_TYPE STREQUAL "Debug")
+        add_test(NAME nova_nonnull_asan_take_tests
+            COMMAND ${CMAKE_COMMAND} -E env $<TARGET_FILE:nova_nonnull_asan_take_tests>
+        )
+        set_tests_properties(nova_nonnull_asan_take_tests PROPERTIES
+            PASS_REGULAR_EXPRESSION ".*AddressSanitizer: use-after-poison.*"
+        )
+    endif()
 endif()
