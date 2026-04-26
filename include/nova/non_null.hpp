@@ -12,7 +12,7 @@
 #include <utility>
 
 #if defined( __has_feature )
-#    if __has_feature( address_sanitizer )
+#    if __has_feature( address_sanitizer ) && __has_include( <sanitizer/asan_interface.h> )
 #        define NOVA_HAVE_ASAN 1
 #    endif
 #endif
