@@ -68,6 +68,10 @@ if(NOVA_BUILD_TESTS)
     enable_testing()
     add_test(NAME nova_nonnull_tests COMMAND nova_nonnull_tests)
 
+    if (NOT (CMAKE_BUILD_TYPE STREQUAL "Debug" AND CMAKE_CXX_COMPILER_ID MATCHES "Clang|AppleClang"))
+        message(WARNING "AddressSanitizer tests ICE clang in release builds")
+    endif()
+
     add_executable(nova_nonnull_asan_take_tests
         tests/asan_take.cpp
     )
@@ -83,6 +87,8 @@ if(NOVA_BUILD_TESTS)
     )
 
     if (CMAKE_BUILD_TYPE STREQUAL "Debug")
+        target_compile_definitions(nova_nonnull_asan_take_tests PRIVATE NDEBUG)
+
         add_test(NAME nova_nonnull_asan_take_tests
             COMMAND ${CMAKE_COMMAND} -E env $<TARGET_FILE:nova_nonnull_asan_take_tests>
         )
