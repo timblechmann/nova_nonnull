@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.25)
 
-project(nova_nonnull VERSION 0.1.0 LANGUAGES CXX)
+project(nova_nonnull LANGUAGES CXX)
 
 if (NOT CMAKE_CXX_STANDARD)
     set(CMAKE_CXX_STANDARD 20)
@@ -11,14 +11,16 @@ if (NOT CMAKE_MSVC_DEBUG_INFORMATION_FORMAT)
     set(CMAKE_MSVC_DEBUG_INFORMATION_FORMAT "Embedded")
 endif()
 
-add_custom_target(nova_nonnull_project_files SOURCES
-    .clang-tidy
-    .pre-commit-config.yaml
-    _clang-format
-    README.md
-    LICENSE
-    .github/workflows/ci.yml
-)
+if (PROJECT_IS_TOP_LEVEL)
+    add_custom_target(nova_nonnull_project_files SOURCES
+        .clang-tidy
+        .pre-commit-config.yaml
+        _clang-format
+        README.md
+        LICENSE
+        .github/workflows/ci.yml
+    )
+endif()
 
 # Project layout
 add_library(nova_nonnull INTERFACE)
@@ -33,17 +35,18 @@ target_include_directories(nova_nonnull INTERFACE
 )
 
 # Testing
-option(NOVA_BUILD_TESTS "Build unit tests" ON)
+option(NOVA_BUILD_TESTS "Build unit tests" ${PROJECT_IS_TOP_LEVEL})
 if(NOVA_BUILD_TESTS)
     if (NOT COMMAND CPMAddPackage)
-        # CPM.cmake downloader
-        set(CPM_DOWNLOAD_VERSION 0.40.2)
+        set(CPM_DOWNLOAD_VERSION 0.42.3)
         if(NOT EXISTS "${CMAKE_BINARY_DIR}/cmake/CPM.cmake")
-          message(STATUS "Downloading CPM.cmake ${CPM_DOWNLOAD_VERSION}...")
-          file(DOWNLOAD
-               "https://github.com/cpm-cmake/CPM.cmake/releases/download/v${CPM_DOWNLOAD_VERSION}/CPM.cmake"
-               "${CMAKE_BINARY_DIR}/cmake/CPM.cmake"
-          )
+            message(STATUS "Downloading CPM.cmake ${CPM_DOWNLOAD_VERSION}...")
+            file(DOWNLOAD
+                "https://github.com/cpm-cmake/CPM.cmake/releases/download/v${CPM_DOWNLOAD_VERSION}/CPM.cmake"
+                "${CMAKE_BINARY_DIR}/cmake/CPM.cmake"
+                TLS_VERIFY ON
+                EXPECTED_HASH SHA256=a609e875fd532b067174250f6abbc3dac22fe2d64869783fb1e80bda1625c844
+            )
         endif()
         include("${CMAKE_BINARY_DIR}/cmake/CPM.cmake")
     endif()
@@ -54,7 +57,7 @@ if(NOVA_BUILD_TESTS)
             CPMAddPackage(
                 NAME Catch2
                 GITHUB_REPOSITORY catchorg/Catch2
-                VERSION 3.13.0
+                VERSION 3.15.0
             )
         endblock()
     endif()
@@ -68,9 +71,6 @@ if(NOVA_BUILD_TESTS)
     enable_testing()
     add_test(NAME nova_nonnull_tests COMMAND nova_nonnull_tests)
 
-    if (NOT (CMAKE_BUILD_TYPE STREQUAL "Debug" AND CMAKE_CXX_COMPILER_ID MATCHES "Clang|AppleClang"))
-        message(WARNING "AddressSanitizer tests ICE clang in release builds")
-    endif()
 
     add_executable(nova_nonnull_asan_take_tests
         tests/asan_take.cpp

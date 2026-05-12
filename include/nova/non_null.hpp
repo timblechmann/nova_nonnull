@@ -43,7 +43,7 @@
 #    endif
 #endif
 
-#if defined( __GNUC__ ) || defined( __clang__ )
+#if ( defined( __GNUC__ ) || defined( __clang__ ) ) && !( defined( __clang_major__ ) && defined( __OPTIMIZE__ ) )
 #    define NOVA_RETURNS_NONNULL __attribute__( ( returns_nonnull ) )
 #else
 #    define NOVA_RETURNS_NONNULL
